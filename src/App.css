@@ -29,3 +29,32 @@
 .small {
   font-size: 0.75rem;
 }
+/* สีสำหรับ Priority Badges */
+.priority-urgent {
+  background-color: #ef4444;
+  color: white;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.priority-high {
+  background-color: #f97316;
+  color: white;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.priority-normal {
+  background-color: #3b82f6;
+  color: white;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+/* สีสำหรับ Category Tag */
+.category-tag {
+  background-color: #4b5563;
+  color: white;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
