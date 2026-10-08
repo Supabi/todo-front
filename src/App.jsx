@@ -1,22 +1,19 @@
 import React, { useState, useEffect, useMemo } from 'react';
-
 import { 
   CheckCircle2, Circle, Trash2, Plus, Clock, Settings, RefreshCw, 
   AlertCircle, Sparkles, Server, Check, X, Search, Edit2, 
-  ArrowUpDown, LogOut, User as UserIcon, Lock, Mail, ArrowRight
+  ArrowUpDown, LogOut, User as UserIcon, Lock, Mail, ArrowRight,
+  Tag, AlertTriangle, Calendar, GripVertical
 } from 'lucide-react';
-
+import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd';
 
 const getInitialApiUrl = () => {
-  // Check for Vite environment variables first
   if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_URL) {
     return import.meta.env.VITE_API_URL;
   }
-  // Fallback for Create React App or Node environments
   if (typeof process !== 'undefined' && process.env && process.env.REACT_APP_API_URL) {
     return process.env.REACT_APP_API_URL;
   }
-  // Default fallback for local development
   return 'http://localhost:5000';
 };
 
@@ -24,15 +21,19 @@ export default function App() {
   // Auth State
   const [token, setToken] = useState(localStorage.getItem('taskflow_token') || null);
   const [currentUser, setCurrentUser] = useState(localStorage.getItem('taskflow_user') || null);
-  const [isAuthMode, setIsAuthMode] = useState('login'); // 'login' | 'register'
+  const [isAuthMode, setIsAuthMode] = useState('login');
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authError, setAuthError] = useState('');
   const [isAuthLoading, setIsAuthLoading] = useState(false);
 
-  // Todo State
+  // Todo State & Custom Fields
   const [todos, setTodos] = useState([]);
   const [newTodoText, setNewTodoText] = useState('');
+  const [newPriority, setNewPriority] = useState('Normal');
+  const [newCategory, setNewCategory] = useState('Personal');
+  const [newDueDate, setNewDueDate] = useState('');
+
   const [filter, setFilter] = useState('all'); 
   const [sortBy, setSortBy] = useState('newest'); 
   const [searchQuery, setSearchQuery] = useState('');
@@ -131,43 +132,65 @@ export default function App() {
     if (!trimmed) return;
 
     const tempId = `local-${Date.now()}`;
-    const newTodo = { _id: tempId, text: trimmed, completed: false, createdAt: new Date().toISOString() };
+    const newTodo = { 
+      _id: tempId, 
+      text: trimmed, 
+      completed: false, 
+      priority: newPriority,
+      category: newCategory,
+      dueDate: newDueDate,
+      status: 'To Do',
+      createdAt: new Date().toISOString() 
+    };
+
     setTodos((prev) => [newTodo, ...prev]);
     setNewTodoText('');
+    setNewDueDate('');
 
     try {
       const response = await fetch(`${apiUrl.replace(/\/$/, '')}/api/todos`, {
         method: 'POST',
         headers: getHeaders(),
-        body: JSON.stringify({ text: trimmed }),
+        body: JSON.stringify({ 
+          text: trimmed, 
+          priority: newPriority, 
+          category: newCategory, 
+          dueDate: newDueDate, 
+          status: 'To Do' 
+        }),
       });
 
       if (response.status === 401) return handleLogout();
       if (!response.ok) throw new Error('Failed to create on server');
       
       const savedTodo = await response.json();
-      setTodos((prev) => prev.map((t) => (t._id === tempId ? savedTodo : t)));
+      setTodos((prev) => prev.map((t) => (t._id === tempId ? { ...newTodo, ...savedTodo } : t)));
     } catch (err) {
       console.error('Error saving todo:', err);
-      // Remove temp item on failure
-      setTodos((prev) => prev.filter((t) => t._id !== tempId));
+    }
+  };
+
+  const handleStatusChange = async (todo, newStatus) => {
+    const isCompleted = newStatus === 'Done';
+    const updated = { ...todo, status: newStatus, completed: isCompleted };
+    
+    setTodos((prev) => prev.map((t) => (t._id === todo._id ? updated : t)));
+
+    try {
+      await fetch(`${apiUrl.replace(/\/$/, '')}/api/todos/${todo._id}`, {
+        method: 'PUT',
+        headers: getHeaders(),
+        body: JSON.stringify({ status: newStatus, completed: isCompleted }),
+      });
+    } catch (err) {
+      console.error('Error updating status:', err);
     }
   };
 
   const handleToggleTodo = async (todo) => {
     const updatedStatus = !todo.completed;
-    setTodos((prev) => prev.map((t) => (t._id === todo._id ? { ...t, completed: updatedStatus } : t)));
-
-    try {
-      const response = await fetch(`${apiUrl.replace(/\/$/, '')}/api/todos/${todo._id}`, {
-        method: 'PUT',
-        headers: getHeaders(),
-        body: JSON.stringify({ completed: updatedStatus }),
-      });
-      if (response.status === 401) handleLogout();
-    } catch (err) {
-      setTodos((prev) => prev.map((t) => (t._id === todo._id ? { ...t, completed: todo.completed } : t)));
-    }
+    const newStatusStr = updatedStatus ? 'Done' : 'To Do';
+    handleStatusChange(todo, newStatusStr);
   };
 
   const handleStartEdit = (todo) => {
@@ -213,13 +236,42 @@ export default function App() {
     }
   };
 
-  const formatDateTime = (isoDate) => {
-    if (!isoDate) return '';
-    try {
-      return new Date(isoDate).toLocaleString('en-US', {
-        month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit',
-      });
-    } catch { return ''; }
+  // Drag and Drop Handler
+  const handleOnDragEnd = (result) => {
+    if (!result.destination) return;
+    const items = Array.from(filteredTodos);
+    const [reorderedItem] = items.splice(result.source.index, 1);
+    items.splice(result.destination.index, 0, reorderedItem);
+    setTodos(items);
+  };
+
+  const getDueBadge = (dueDateStr) => {
+    if (!dueDateStr) return null;
+    const today = new Date().setHours(0, 0, 0, 0);
+    const due = new Date(dueDateStr).setHours(0, 0, 0, 0);
+    const diffDays = Math.ceil((due - today) / (1000 * 60 * 60 * 24));
+
+    if (diffDays < 0) {
+      return <span className="text-[10px] bg-rose-500/20 text-rose-400 px-2 py-0.5 rounded-full font-semibold border border-rose-500/30">Expired</span>;
+    }
+    if (diffDays === 0) {
+      return <span className="text-[10px] bg-amber-500/20 text-amber-400 px-2 py-0.5 rounded-full font-semibold border border-amber-500/30">Due Today</span>;
+    }
+    if (diffDays === 1) {
+      return <span className="text-[10px] bg-blue-500/20 text-blue-400 px-2 py-0.5 rounded-full font-semibold border border-blue-500/30">Due Tomorrow</span>;
+    }
+    return <span className="text-[10px] bg-slate-800 text-slate-300 px-2 py-0.5 rounded-full border border-slate-700">Due: {dueDateStr}</span>;
+  };
+
+  const getPriorityBadge = (priority) => {
+    switch (priority) {
+      case 'Urgent':
+        return <span className="text-[10px] bg-red-600 text-white px-2 py-0.5 rounded-md font-bold uppercase tracking-wider">Urgent</span>;
+      case 'High':
+        return <span className="text-[10px] bg-orange-500 text-white px-2 py-0.5 rounded-md font-medium uppercase tracking-wider">High</span>;
+      default:
+        return <span className="text-[10px] bg-slate-700 text-slate-300 px-2 py-0.5 rounded-md font-medium">Normal</span>;
+    }
   };
 
   const filteredTodos = useMemo(() => {
@@ -242,11 +294,8 @@ export default function App() {
   if (!token) {
     return (
       <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-4 selection:bg-indigo-500 selection:text-white">
-        
-        {/* Settings button to adjust backend URL if needed */}
         <button
           onClick={() => setIsSettingsOpen(true)}
-          title="API Configuration"
           className="absolute top-6 right-6 p-2 rounded-lg bg-slate-900 border border-slate-800 text-slate-300 hover:text-white transition"
         >
           <Settings className="w-5 h-5" />
@@ -258,9 +307,7 @@ export default function App() {
               <Sparkles className="w-8 h-8 text-white" />
             </div>
           </div>
-          <h1 className="text-2xl font-bold text-center text-white mb-2">
-            TaskFlow
-          </h1>
+          <h1 className="text-2xl font-bold text-center text-white mb-2">TaskFlow</h1>
           <p className="text-center text-slate-400 text-sm mb-8">
             {isAuthMode === 'login' ? 'Sign in to sync your tasks securely.' : 'Create an account to get started.'}
           </p>
@@ -280,7 +327,7 @@ export default function App() {
                 value={authEmail}
                 onChange={(e) => setAuthEmail(e.target.value)}
                 placeholder="Email address"
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-10 pr-4 py-3 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500/70"
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-10 pr-4 py-3 text-sm text-slate-200 focus:outline-none focus:border-indigo-500/70"
               />
             </div>
             <div className="relative">
@@ -291,7 +338,7 @@ export default function App() {
                 value={authPassword}
                 onChange={(e) => setAuthPassword(e.target.value)}
                 placeholder="Password"
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-10 pr-4 py-3 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500/70"
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-10 pr-4 py-3 text-sm text-slate-200 focus:outline-none focus:border-indigo-500/70"
               />
             </div>
             <button
@@ -316,33 +363,6 @@ export default function App() {
             </button>
           </div>
         </div>
-
-        {/* Re-use Settings Modal Logic */}
-        {isSettingsOpen && (
-          <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6 shadow-2xl relative">
-              <button onClick={() => setIsSettingsOpen(false)} className="absolute top-4 right-4 text-slate-400 hover:text-slate-200">
-                <X className="w-5 h-5" />
-              </button>
-              <h2 className="text-lg font-semibold text-white flex items-center gap-2">
-                <Server className="w-5 h-5 text-indigo-400" /> API Environment Settings
-              </h2>
-              <div className="mt-4 flex flex-col gap-2">
-                <label className="text-xs font-medium text-slate-300">Backend URL</label>
-                <input
-                  type="text"
-                  value={pendingApiUrl}
-                  onChange={(e) => setPendingApiUrl(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 font-mono"
-                />
-              </div>
-              <div className="mt-6 flex justify-end gap-2.5">
-                <button onClick={() => setIsSettingsOpen(false)} className="px-4 py-2 rounded-xl text-xs text-slate-400 hover:bg-slate-800">Cancel</button>
-                <button onClick={() => { setApiUrl(pendingApiUrl); setIsSettingsOpen(false); }} className="px-4 py-2 rounded-xl text-xs bg-indigo-600 hover:bg-indigo-500 text-white font-medium">Save</button>
-              </div>
-            </div>
-          </div>
-        )}
       </div>
     );
   }
@@ -385,18 +405,52 @@ export default function App() {
           </div>
         </header>
 
-        <form onSubmit={handleAddTodo} className="relative group">
-          <div className="flex items-center gap-2 p-1.5 bg-slate-900/90 border border-slate-800 rounded-2xl shadow-xl shadow-black/40 focus-within:border-indigo-500/80 focus-within:ring-2 focus-within:ring-indigo-500/20 transition-all">
+        {/* Form Add Todo พร้อมเลือก Priority, Category, Due Date */}
+        <form onSubmit={handleAddTodo} className="flex flex-col gap-3 p-3 bg-slate-900/90 border border-slate-800 rounded-2xl shadow-xl">
+          <div className="flex items-center gap-2">
             <input
               type="text"
               value={newTodoText}
               onChange={(e) => setNewTodoText(e.target.value)}
               placeholder="What needs to be done today?..."
-              className="flex-1 bg-transparent px-4 py-3 text-slate-100 placeholder-slate-500 text-sm focus:outline-none"
+              className="flex-1 bg-transparent px-3 py-2 text-slate-100 placeholder-slate-500 text-sm focus:outline-none"
             />
-            <button type="submit" disabled={!newTodoText.trim()} className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-sm flex items-center gap-2 shadow-md shadow-indigo-600/30 transition disabled:opacity-40 active:scale-95">
+            <button type="submit" disabled={!newTodoText.trim()} className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-sm flex items-center gap-2 transition disabled:opacity-40">
               <Plus className="w-4 h-4" /> <span>Add</span>
             </button>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3 pt-2 border-t border-slate-800/60 text-xs">
+            {/* Priority Select */}
+            <div className="flex items-center gap-1.5 bg-slate-950 px-2.5 py-1.5 rounded-lg border border-slate-800">
+              <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
+              <select value={newPriority} onChange={(e) => setNewPriority(e.target.value)} className="bg-transparent text-slate-200 focus:outline-none cursor-pointer">
+                <option value="Normal" className="bg-slate-900">Normal</option>
+                <option value="High" className="bg-slate-900">High</option>
+                <option value="Urgent" className="bg-slate-900">Urgent</option>
+              </select>
+            </div>
+
+            {/* Category Select */}
+            <div className="flex items-center gap-1.5 bg-slate-950 px-2.5 py-1.5 rounded-lg border border-slate-800">
+              <Tag className="w-3.5 h-3.5 text-indigo-400" />
+              <select value={newCategory} onChange={(e) => setNewCategory(e.target.value)} className="bg-transparent text-slate-200 focus:outline-none cursor-pointer">
+                <option value="Personal" className="bg-slate-900">Personal</option>
+                <option value="Work" className="bg-slate-900">Work</option>
+                <option value="Study" className="bg-slate-900">Study</option>
+              </select>
+            </div>
+
+            {/* Due Date Input */}
+            <div className="flex items-center gap-1.5 bg-slate-950 px-2.5 py-1 rounded-lg border border-slate-800">
+              <Calendar className="w-3.5 h-3.5 text-emerald-400" />
+              <input
+                type="date"
+                value={newDueDate}
+                onChange={(e) => setNewDueDate(e.target.value)}
+                className="bg-transparent text-slate-200 focus:outline-none cursor-pointer text-xs"
+              />
+            </div>
           </div>
         </form>
 
@@ -414,7 +468,7 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2 flex-1 sm:justify-end">
-            <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-800 rounded-xl px-2.5 py-1.5 text-xs text-slate-300 hover:border-slate-700">
+            <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-800 rounded-xl px-2.5 py-1.5 text-xs text-slate-300">
               <ArrowUpDown className="w-3.5 h-3.5 text-indigo-400" />
               <select value={sortBy} onChange={(e) => setSortBy(e.target.value)} className="bg-transparent text-slate-200 focus:outline-none cursor-pointer">
                 <option value="newest" className="bg-slate-900">Newest first</option>
@@ -431,67 +485,99 @@ export default function App() {
           </div>
         </div>
 
-        <div className="flex flex-col gap-2.5">
-          {filteredTodos.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-16 px-4 border border-dashed border-slate-800/80 rounded-2xl bg-slate-900/30 text-center">
-              <CheckCircle2 className="w-7 h-7 text-slate-500 mb-3" />
-              <h3 className="text-sm font-medium text-slate-300">No tasks found</h3>
-              <p className="text-xs text-slate-500 mt-1 max-w-xs">Nothing to see here right now.</p>
-            </div>
-          ) : (
-            filteredTodos.map((todo) => {
-              const formattedDate = formatDateTime(todo.createdAt || todo.timestamp);
-              const isEditing = editingId === todo._id;
+        {/* Drag and Drop Context */}
+        <DragDropContext onDragEnd={handleOnDragEnd}>
+          <Droppable droppableId="todos">
+            {(provided) => (
+              <div {...provided.droppableProps} ref={provided.innerRef} className="flex flex-col gap-2.5">
+                {filteredTodos.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center py-16 px-4 border border-dashed border-slate-800/80 rounded-2xl bg-slate-900/30 text-center">
+                    <CheckCircle2 className="w-7 h-7 text-slate-500 mb-3" />
+                    <h3 className="text-sm font-medium text-slate-300">No tasks found</h3>
+                    <p className="text-xs text-slate-500 mt-1 max-w-xs">Nothing to see here right now.</p>
+                  </div>
+                ) : (
+                  filteredTodos.map((todo, index) => {
+                    const isEditing = editingId === todo._id;
 
-              return (
-                <div key={todo._id} className={`group flex items-start gap-3 p-3.5 rounded-xl border transition-all ${todo.completed ? 'bg-slate-900/40 border-slate-800/50' : 'bg-slate-900/80 border-slate-800 hover:border-slate-700'}`}>
-                  <div className="flex items-start gap-3.5 flex-1 min-w-0">
-                    <button onClick={() => handleToggleTodo(todo)} disabled={isEditing} className="mt-0.5 text-slate-500 hover:text-indigo-400">
-                      {todo.completed ? <CheckCircle2 className="w-5 h-5 text-emerald-400" /> : <Circle className="w-5 h-5" />}
-                    </button>
-                    <div className="flex flex-col gap-1 flex-1">
-                      {isEditing ? (
-                        <div className="flex flex-col gap-1.5">
-                          <input
-                            type="text" autoFocus value={editingText}
-                            onChange={(e) => setEditingText(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') handleSaveEdit(todo._id);
-                              if (e.key === 'Escape') setEditingId(null);
-                            }}
-                            className="bg-slate-950 border border-indigo-500/70 rounded-lg px-2.5 py-1.5 text-sm text-slate-100 focus:outline-none"
-                          />
-                        </div>
-                      ) : (
-                        <p onDoubleClick={() => !todo.completed && handleStartEdit(todo)} className={`text-sm break-words ${todo.completed ? 'line-through text-slate-500' : 'text-slate-100'}`}>
-                          {todo.text}
-                        </p>
-                      )}
-                      {formattedDate && !isEditing && (
-                        <div className="flex items-center gap-1.5 text-[11px] text-slate-400">
-                          <Clock className="w-3 h-3" /> {formattedDate} {todo.updatedAt && '(edited)'}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    {isEditing ? (
-                      <>
-                        <button onClick={() => handleSaveEdit(todo._id)} className="p-1.5 text-emerald-400 hover:bg-emerald-500/10 rounded-lg"><Check className="w-4 h-4" /></button>
-                        <button onClick={() => setEditingId(null)} className="p-1.5 text-slate-400 hover:bg-slate-800 rounded-lg"><X className="w-4 h-4" /></button>
-                      </>
-                    ) : (
-                      <>
-                        <button onClick={() => handleStartEdit(todo)} className="p-1.5 text-slate-500 hover:text-indigo-400 hover:bg-indigo-500/10 rounded-lg opacity-80 sm:opacity-0 group-hover:opacity-100"><Edit2 className="w-3.5 h-3.5" /></button>
-                        <button onClick={() => setDeleteCandidate(todo)} className="p-1.5 text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg opacity-80 sm:opacity-0 group-hover:opacity-100"><Trash2 className="w-4 h-4" /></button>
-                      </>
-                    )}
-                  </div>
-                </div>
-              );
-            })
-          )}
-        </div>
+                    return (
+                      <Draggable key={todo._id} draggableId={todo._id} index={index}>
+                        {(provided) => (
+                          <div 
+                            ref={provided.innerRef}
+                            {...provided.draggableProps}
+                            className={`group flex items-center gap-3 p-3.5 rounded-xl border transition-all ${todo.completed ? 'bg-slate-900/40 border-slate-800/50' : 'bg-slate-900/80 border-slate-800 hover:border-slate-700'}`}
+                          >
+                            <div {...provided.dragHandleProps} className="text-slate-600 hover:text-slate-400 cursor-grab">
+                              <GripVertical className="w-4 h-4" />
+                            </div>
+
+                            <button onClick={() => handleToggleTodo(todo)} disabled={isEditing} className="text-slate-500 hover:text-indigo-400">
+                              {todo.completed ? <CheckCircle2 className="w-5 h-5 text-emerald-400" /> : <Circle className="w-5 h-5" />}
+                            </button>
+
+                            <div className="flex flex-col gap-1.5 flex-1 min-w-0">
+                              {isEditing ? (
+                                <input
+                                  type="text" autoFocus value={editingText}
+                                  onChange={(e) => setEditingText(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') handleSaveEdit(todo._id);
+                                    if (e.key === 'Escape') setEditingId(null);
+                                  }}
+                                  className="bg-slate-950 border border-indigo-500/70 rounded-lg px-2.5 py-1 text-sm text-slate-100 focus:outline-none"
+                                />
+                              ) : (
+                                <p onDoubleClick={() => !todo.completed && handleStartEdit(todo)} className={`text-sm break-words ${todo.completed ? 'line-through text-slate-500' : 'text-slate-100'}`}>
+                                  {todo.text}
+                                </p>
+                              )}
+
+                              {/* Badges Display: Priority, Category, Due Date */}
+                              <div className="flex flex-wrap items-center gap-2">
+                                {getPriorityBadge(todo.priority)}
+                                <span className="text-[10px] bg-slate-800 text-indigo-300 px-2 py-0.5 rounded-md font-medium border border-slate-700/50">
+                                  {todo.category || 'Personal'}
+                                </span>
+                                {getDueBadge(todo.dueDate)}
+                              </div>
+                            </div>
+
+                            {/* Status Selector Dropdown */}
+                            <select
+                              value={todo.status || (todo.completed ? 'Done' : 'To Do')}
+                              onChange={(e) => handleStatusChange(todo, e.target.value)}
+                              className="bg-slate-950 text-xs border border-slate-800 text-slate-300 rounded-lg px-2 py-1 focus:outline-none cursor-pointer"
+                            >
+                              <option value="To Do">To Do</option>
+                              <option value="In Progress">In Progress</option>
+                              <option value="Done">Done</option>
+                            </select>
+
+                            <div className="flex items-center gap-1">
+                              {isEditing ? (
+                                <>
+                                  <button onClick={() => handleSaveEdit(todo._id)} className="p-1.5 text-emerald-400 hover:bg-emerald-500/10 rounded-lg"><Check className="w-4 h-4" /></button>
+                                  <button onClick={() => setEditingId(null)} className="p-1.5 text-slate-400 hover:bg-slate-800 rounded-lg"><X className="w-4 h-4" /></button>
+                                </>
+                              ) : (
+                                <>
+                                  <button onClick={() => handleStartEdit(todo)} className="p-1.5 text-slate-500 hover:text-indigo-400 hover:bg-indigo-500/10 rounded-lg"><Edit2 className="w-3.5 h-3.5" /></button>
+                                  <button onClick={() => setDeleteCandidate(todo)} className="p-1.5 text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg"><Trash2 className="w-4 h-4" /></button>
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </Draggable>
+                    );
+                  })
+                )}
+                {provided.placeholder}
+              </div>
+            )}
+          </Droppable>
+        </DragDropContext>
       </div>
 
       {isSettingsOpen && (
